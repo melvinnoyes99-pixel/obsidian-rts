@@ -1,0 +1,9 @@
+{
+  "name": "OBSIDIAN Web RTS",
+  "short_name": "OBSIDIAN",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#08090b",
+  "theme_color": "#08090b",
+  "orientation": "landscape"
+}
