@@ -1,0 +1,467 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<!-- OBSIDIUM_V07 -->
+<!-- OBSIDIAN_V08 -->
+<title>OBSIDIAN — Web RTS Prototype</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#090b10;color:#eee;font-family:system-ui,sans-serif}
+#game{width:100vw;height:100vh;display:block;background:#18221b}
+#hud{position:fixed;inset:0;pointer-events:none}
+.top{height:54px;background:linear-gradient(180deg,#0a0d12ee,#0a0d1299);border-bottom:1px solid #343944;display:flex;align-items:center;gap:18px;padding:0 14px;font-size:14px}
+.logo{font-weight:900;letter-spacing:3px;color:#d9b95c}.stat{color:#bbb}.stat b{color:#fff}
+.help{margin-left:auto;color:#8f98a8;font-size:12px}
+#orders{position:absolute;bottom:18px;left:18px;background:#0b0e14e8;border:1px solid #363b47;border-radius:12px;padding:12px;max-width:300px}
+#orders b{color:#d9b95c}.hint{font-size:12px;color:#9ba3b1;margin-top:5px}
+#panel{position:absolute;right:18px;bottom:18px;width:230px;background:#0b0e14e8;border:1px solid #363b47;border-radius:12px;padding:14px;pointer-events:auto}
+#panel h3{margin:0 0 8px;color:#d9b95c}.row{display:flex;justify-content:space-between;margin:6px 0;font-size:13px}
+button{width:100%;padding:9px;margin-top:7px;background:#222936;border:1px solid #4b5361;color:#eee;border-radius:7px}
+button:hover{background:#303948}
+#message{position:absolute;top:74px;left:50%;transform:translateX(-50%);background:#090c12dd;border:1px solid #6d5b2b;border-radius:9px;padding:8px 14px;color:#e8d27c;opacity:0;transition:.25s}
+canvas{touch-action:none}
+
+.mobile-tip{position:fixed;left:10px;bottom:92px;max-width:260px;background:rgba(8,8,12,.8);border:1px solid #3a3445;border-radius:10px;padding:7px 9px;font-size:10px;color:#aaa;z-index:5;pointer-events:none}
+@media (max-width:700px){
+  .mobile-tip{display:block}
+}
+</style>
+<link rel="manifest" href="manifest.webmanifest">
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+ <div class="top">
+  <div class="logo">OBSIDIAN</div>
+  <div class="stat">Gold <b id="gold">500</b></div>
+  <div class="stat">Wood <b id="wood">300</b></div>
+  <div class="stat">Stone <b id="stone">200</b></div>
+  <div class="stat">Food <b id="food">300</b></div>
+  <div class="stat">Population <b id="pop">4 / 20</b></div>
+  <div class="help">Select units • Right-click to move</div>
+ </div>
+ <div id="message">Order issued</div>
+ <div id="orders"><b>Command</b><div class="hint" id="orderText">Select an infantry unit.</div></div>
+ <div id="panel">
+  <h3>Command Centre</h3>
+  <div class="row"><span>Simulation</span><span id="tick">0</span></div>
+  <div class="row"><span>Selected</span><span id="selected">0</span></div>
+  <div class="row"><span>Workers</span><span id="workers">0</span></div>
+  <div class="row"><span>Research</span><span id="research">0</span></div><div class="row"><span>Army Groups</span><span id="groups">0</span></div>
+  <div class="row"><span>AI Nations</span><span id="nations">3</span></div>
+  <div class="row"><span>Territory</span><span id="territory">Home</span></div>
+  <button onclick="buildHouse()">Build House — 100 Wood</button>
+  <button onclick="train()">Train Infantry — 60 Food</button>
+  <button onclick="attackMode()">Attack Mode</button>
+  <button onclick="stopUnits()">Stop / Hold Position</button>
+  <button onclick="trainCivilian()">Train Civilian — 40 Food</button>
+  <button onclick="research()">Research — 150 Gold</button>
+  <button onclick="buildMode('house')">Place House — 100 Wood</button>
+  <button onclick="buildMode('farm')">Place Farm — 80 Wood</button>
+  <button onclick="buildMode('mine')">Place Mine — 100 Wood + 50 Stone</button>
+  <button onclick="buildMode('lumber')">Place Lumber Camp — 80 Wood</button>
+  <button onclick="buildMode('barracks')">Place Barracks — 150 Wood</button>
+  <button onclick="buildMode('wall')">Place Wall — 30 Stone</button>
+  <button onclick="buildMode('road')">Place Road — 10 Stone</button>
+  <button onclick="trainUnit('archer')">Train Archer — 50 Food + 30 Wood</button>
+  <button onclick="trainUnit('cavalry')">Train Cavalry — 80 Food + 60 Gold</button>
+  <button onclick="trainUnit('siege')">Build Siege — 100 Wood + 100 Stone</button>
+  <button onclick="upgradeArmy()">Upgrade Selected — 100 Gold</button>
+  <button onclick="diplomacy()">Change Diplomacy</button>
+<button onclick="manualSave()">💾 Save</button><button onclick="manualLoad()">↻ Load</button>
+ </div>
+</div>
+<script>
+const c=document.getElementById('game'),ctx=c.getContext('2d');
+let W,H,dpr=1;
+function resize(){dpr=devicePixelRatio||1;W=innerWidth;H=innerHeight;c.width=W*dpr;c.height=H*dpr;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener('resize',resize);resize();
+
+const world={w:1800,h:1100,camX:650,camY:430,zoom:.75};
+const state={gold:500,wood:300,stone:200,food:300,pop:4,maxPop:20,tick:0,workers:3,research:0};
+let units=[],selected=new Set(),mouse={x:0,y:0,down:false},drag=null;
+let buildings=[{x:400,y:430,type:'town'}];
+const nations=[
+ {id:1,name:'Ironhold',x:1080,y:520,color:'#a74444',state:'Hostile',gold:300,power:80},
+ {id:2,name:'Verdant Vale',x:1350,y:780,color:'#4d8a5a',state:'Neutral',gold:420,power:55},
+ {id:3,name:'Crown of Ash',x:1450,y:300,color:'#7656a5',state:'Neutral',gold:350,power:65}
+];
+let territoryRadius=330;
+
+for(let i=0;i<4;i++) units.push(makeUnit(i,'infantry',430+i*34,500));
+let enemyId=100;
+let enemies=[];
+let aiUnits=[];
+let aiId=500;
+for(let i=0;i<5;i++) enemies.push({id:enemyId++,team:'enemy',x:1080+i*34,y:520,hp:100,max:100,tx:1080+i*34,ty:520,damage:9,range:52,exp:0,level:1,attackCd:0});
+for(let n of nations){
+ for(let i=0;i<4;i++) aiUnits.push({id:aiId++,nation:n.id,team:'ai',x:n.x+i*28,y:n.y+25,hp:90,max:90,tx:n.x+i*28,ty:n.y+25,damage:10,range:50,attackCd:0});
+}
+
+function makeUnit(id,type,x,y){
+ const stats={
+  infantry:{hp:100,damage:12,range:55,speed:.9,pop:1},
+  archer:{hp:70,damage:16,range:125,speed:.85,pop:1},
+  cavalry:{hp:160,damage:25,range:50,speed:1.45,pop:1},
+  siege:{hp:220,damage:55,range:180,speed:.35,pop:4}
+ }[type];
+ return {id,team:'player',type,x,y,hp:stats.hp,max:stats.hp,tx:x,ty:y,damage:stats.damage,range:stats.range,speed:stats.speed,exp:0,level:1,attackCd:0,pop:stats.pop,attack:false};
+}
+const resources=[
+ {id:1,type:'wood',x:250,y:690,amount:3000},
+ {id:2,type:'wood',x:320,y:730,amount:3000},
+ {id:3,type:'food',x:650,y:680,amount:2500},
+ {id:4,type:'food',x:720,y:710,amount:2500},
+ {id:5,type:'stone',x:820,y:330,amount:3500},
+ {id:6,type:'stone',x:900,y:300,amount:3500}
+];
+let workers=[];
+for(let i=0;i<3;i++) workers.push({id:i,x:470+i*22,y:450,job:null,target:null});
+let researchDone=false;
+let buildModeActive=null;
+let armyGroups={1:[],2:[],3:[]};
+
+
+function sx(x){return (x-world.camX)*world.zoom+W/2}
+function sy(y){return (y-world.camY)*world.zoom+H/2}
+function wx(x){return (x-W/2)/world.zoom+world.camX}
+function wy(y){return (y-H/2)/world.zoom+world.camY}
+
+
+function drawTerrain(){
+  const step=70;
+  for(let y=0;y<world.h;y+=step){
+    for(let x=0;x<world.w;x+=step){
+      const v=Math.sin(x*.013)+Math.cos(y*.017)+Math.sin((x+y)*.006);
+      let fill=v>1.4?'#3b4530':v<-.9?'#26363d':'#30392d';
+      ctx.fillStyle=fill;
+      ctx.fillRect(sx(x),sy(y),step*world.zoom+1,step*world.zoom+1);
+    }
+  }
+}
+
+function draw(){
+ drawTerrain();
+ ctx.clearRect(0,0,W,H);
+ ctx.fillStyle='#1a241c';ctx.fillRect(0,0,W,H);
+ // terrain grid
+ let step=80;
+ ctx.strokeStyle='#253227';ctx.lineWidth=1;
+ for(let x=Math.floor(world.camX/step)*step;x<world.camX+W/world.zoom;x+=step){ctx.beginPath();ctx.moveTo(sx(x),0);ctx.lineTo(sx(x),H);ctx.stroke()}
+ for(let y=Math.floor(world.camY/step)*step;y<world.camY+H/world.zoom;y+=step){ctx.beginPath();ctx.moveTo(0,sy(y));ctx.lineTo(W,sy(y));ctx.stroke()}
+ // river
+ ctx.strokeStyle='#182f4a';ctx.lineWidth=65*world.zoom;ctx.beginPath();ctx.moveTo(sx(0),sy(180));ctx.bezierCurveTo(sx(500),sy(300),sx(800),sy(120),sx(1800),sy(250));ctx.stroke();
+ // resource nodes
+ resources.forEach(r=>{
+   if(r.amount<=0)return;
+   let x=sx(r.x),y=sy(r.y);
+   ctx.fillStyle=r.type==='wood'?'#35633b':r.type==='stone'?'#737982':'#c19b45';
+   ctx.beginPath();ctx.arc(x,y,18*world.zoom,0,Math.PI*2);ctx.fill();
+   ctx.fillStyle='#fff';ctx.font='11px system-ui';ctx.textAlign='center';ctx.fillText(r.type.toUpperCase(),x,y+4);ctx.textAlign='left';
+ });
+ workers.forEach(w=>{
+   let x=sx(w.x),y=sy(w.y);
+   ctx.fillStyle='#6db6d9';ctx.beginPath();ctx.arc(x,y,6*world.zoom,0,Math.PI*2);ctx.fill();
+ });
+ // roads
+ ctx.strokeStyle='#594d38';ctx.lineWidth=12*world.zoom;ctx.beginPath();ctx.moveTo(sx(250),sy(600));ctx.lineTo(sx(900),sy(430));ctx.lineTo(sx(1450),sy(700));ctx.stroke();
+ buildings.forEach(b=>{
+   let x=sx(b.x),y=sy(b.y);
+   if(b.type==='town'){ctx.fillStyle='#5b4630';ctx.fillRect(x-42*world.zoom,y-35*world.zoom,84*world.zoom,70*world.zoom);ctx.fillStyle='#8e2727';ctx.beginPath();ctx.moveTo(x-50*world.zoom,y-35*world.zoom);ctx.lineTo(x,y-75*world.zoom);ctx.lineTo(x+50*world.zoom,y-35*world.zoom);ctx.fill()}
+   else if(b.type==='wall'){ctx.fillStyle='#7b7d80';ctx.fillRect(x-35*world.zoom,y-8*world.zoom,70*world.zoom,16*world.zoom)}
+   else if(b.type==='road'){ctx.fillStyle='#806f52';ctx.fillRect(x-45*world.zoom,y-5*world.zoom,90*world.zoom,10*world.zoom)}
+   else {
+     ctx.fillStyle=b.type==='farm'?'#88703d':b.type==='mine'?'#555b61':b.type==='lumber'?'#315538':b.type==='barracks'?'#633b32':'#65513b';
+     ctx.fillRect(x-25*world.zoom,y-20*world.zoom,50*world.zoom,40*world.zoom);
+     ctx.fillStyle='#ddd';ctx.font='9px system-ui';ctx.textAlign='center';ctx.fillText(b.type.toUpperCase(),x,y+3);ctx.textAlign='left';
+   }
+ });
+ nations.forEach(n=>{
+   let x=sx(n.x),y=sy(n.y),r=125*world.zoom;
+   ctx.save();ctx.globalAlpha=.16;ctx.fillStyle=n.color;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();ctx.restore();
+   ctx.fillStyle=n.color;ctx.fillRect(x-30*world.zoom,y-32*world.zoom,60*world.zoom,45*world.zoom);
+   ctx.fillStyle='#eee';ctx.font='10px system-ui';ctx.textAlign='center';ctx.fillText(n.name,x,y+3);ctx.textAlign='left';
+ });
+ units.forEach(u=>{
+   let x=sx(u.x),y=sy(u.y),r=10*world.zoom;
+   if(selected.has(u.id)){ctx.strokeStyle='#e7c85e';ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y,r+7,0,Math.PI*2);ctx.stroke()}
+   ctx.fillStyle=u.type==='archer'?'#5c9acb':u.type==='cavalry'?'#b884d6':u.type==='siege'?'#b87943':'#c9cdd2';
+   if(u.type==='siege'){ctx.fillRect(x-r*1.4,y-r*.65,r*2.8,r*1.3)}
+   else if(u.type==='cavalry'){ctx.beginPath();ctx.ellipse(x,y,r*1.2,r*.8,0,0,Math.PI*2);ctx.fill()}
+   else ctx.fillRect(x-r*.55,y-r*.75,r*1.1,r*1.5);
+   ctx.fillStyle='#333b46';ctx.fillRect(x-r*.8,y-r*.95,r*1.6,r*.35);
+   ctx.fillStyle='#5bc47a';ctx.fillRect(x-r,y-r-6,(2*r)*(u.hp/u.max),3);
+   if(u.level>1){ctx.fillStyle='#e7c85e';ctx.font='10px system-ui';ctx.fillText('★'+u.level,x+r+3,y-4)}
+ });
+ aiUnits.forEach(u=>{
+   if(u.hp<=0)return;
+   let n=nations.find(n=>n.id===u.nation),x=sx(u.x),y=sy(u.y),r=8*world.zoom;
+   ctx.fillStyle=n?n.color:'#888';ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+ });
+ enemies.forEach(u=>{
+   let x=sx(u.x),y=sy(u.y),r=10*world.zoom;
+   ctx.fillStyle='#b83c3c';ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+   ctx.fillStyle='#ff7777';ctx.fillRect(x-r,y-r-6,(2*r)*(u.hp/u.max),3);
+ });
+ if(drag){ctx.strokeStyle='#d9b95c';ctx.setLineDash([5,4]);ctx.strokeRect(drag.x,drag.y,mouse.x-drag.x,mouse.y-drag.y);ctx.setLineDash([])}
+}
+function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function nearestEnemy(u){let best=null,bd=Infinity;enemies.forEach(e=>{let d=distance(u,e);if(d<bd){bd=d;best=e}});return [best,bd]}
+function nearestPlayer(u){let best=null,bd=Infinity;units.forEach(e=>{let d=distance(u,e);if(d<bd){bd=d;best=e}});return [best,bd]}
+function fightUnit(u, target, dt){
+  if(!target)return;
+  let d=distance(u,target);
+  if(d>u.range){u.x+=(target.x-u.x)/d*Math.min(.9*dt,d-u.range+2);u.y+=(target.y-u.y)/d*Math.min(.9*dt,d-u.range+2)}
+  else if(u.attackCd<=0){
+    target.hp-=u.damage;
+    u.attackCd=.65;
+    if(target.hp<=0){
+      if(target.team==='enemy'){u.exp++; if(u.exp>=3){u.exp=0;u.level++;u.damage+=3;u.max+=15;u.hp=Math.min(u.max,u.hp+15);flash('Veteran promotion!')}}
+    }
+  }
+}
+
+function saveGame(){
+  try{
+    const data={
+      state:{gold:state.gold,wood:state.wood,stone:state.stone,food:state.food,
+             pop:state.pop,maxPop:state.maxPop,workers:state.workers,research:state.research,
+             tick:state.tick},
+      units:units.map(u=>({x:u.x,y:u.y,hp:u.hp,max:u.max,damage:u.damage,range:u.range,
+        speed:u.speed,type:u.type,level:u.level||1,exp:u.exp||0})),
+      buildings:buildings.map(b=>({x:b.x,y:b.y,type:b.type})),
+      researchDone:researchDone
+    };
+    localStorage.setItem('obsidian_rts_save_v07',JSON.stringify(data));
+  }catch(e){}
+}
+function loadGame(){
+  try{
+    const raw=localStorage.getItem('obsidian_rts_save_v07');
+    if(!raw)return;
+    const d=JSON.parse(raw);
+    if(d.state) Object.assign(state,d.state);
+    if(Array.isArray(d.units) && d.units.length) units=d.units;
+    if(Array.isArray(d.buildings) && d.buildings.length) buildings=d.buildings;
+    if(typeof d.researchDone==='boolean') researchDone=d.researchDone;
+  }catch(e){}
+}
+function manualSave(){saveGame();flash('Game saved');}
+function manualLoad(){loadGame();flash('Game loaded');}
+
+function drawFog(){
+ // Fog of war: unexplored areas remain dark, with a soft visibility radius around the player army.
+ ctx.save();
+ ctx.fillStyle='rgba(3,4,7,.72)';
+ ctx.fillRect(0,0,W,H);
+ ctx.globalCompositeOperation='destination-out';
+ units.forEach(u=>{
+   const x=sx(u.x),y=sy(u.y),r=(135+(u.range||50))*world.zoom;
+   const g=ctx.createRadialGradient(x,y,0,x,y,r);
+   g.addColorStop(0,'rgba(0,0,0,1)');
+   g.addColorStop(.7,'rgba(0,0,0,.75)');
+   g.addColorStop(1,'rgba(0,0,0,0)');
+   ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+ });
+ ctx.restore();
+ drawFog();
+}
+
+function update(){
+ state.tick++;
+ units.forEach(u=>{
+   u.attackCd=Math.max(0,u.attackCd-.1);
+   let enemyTarget=null,ed=Infinity;
+   aiUnits.forEach(a=>{
+   if(a.hp<=0)return;
+   let dx=400-a.x,dy=430-a.y,d=Math.hypot(dx,dy);
+   let n=nations.find(n=>n.id===a.nation);
+   if(n && n.state==='Hostile' && d<520){
+     if(d>a.range){a.x+=dx/d*.28;a.y+=dy/d*.28}
+     else if(a.attackCd<=0){a.attackCd=.9}
+   } else {
+     let wander=Math.sin((state.tick+a.id)*.01);
+     a.x+=(Math.cos(wander)*.12);a.y+=(Math.sin(wander)*.12);
+   }
+   a.attackCd=Math.max(0,a.attackCd-.1);
+ });
+ enemies.forEach(e=>{if(e.hp>0){let d=distance(u,e);if(d<ed){ed=d;enemyTarget=e}}});
+   if(u.attack && enemyTarget) fightUnit(u,enemyTarget,1);
+   else {
+     let dx=u.tx-u.x,dy=u.ty-u.y,d=Math.hypot(dx,dy);
+     if(d>1){let sp=u.speed||.9;if(d<sp){u.x=u.tx;u.y=u.ty}else{u.x+=dx/d*sp;u.y+=dy/d*sp}}
+   }
+ });
+ enemies.forEach(e=>{
+   e.attackCd=Math.max(0,e.attackCd-.1);
+   if(e.hp<=0)return;
+   let [target,d]=nearestPlayer(e);
+   if(target && d<210) fightUnit(e,target,1);
+   else {let dx=e.tx-e.x,dy=e.ty-e.y,dd=Math.hypot(dx,dy);if(dd>1){e.x+=dx/dd*.35;e.y+=dy/dd*.35}}
+ });
+ enemies=enemies.filter(e=>e.hp>0);
+ if(state.tick%10===0){
+  workers.forEach(w=>{
+    if(!w.target || w.target.amount<=0){
+      let available=resources.filter(r=>r.amount>0);
+      w.target=available[Math.floor(Math.random()*available.length)]||null;
+    }
+    if(w.target){
+      let dx=w.target.x-w.x,dy=w.target.y-w.y,d=Math.hypot(dx,dy);
+      if(d>28){w.x+=dx/d*.55;w.y+=dy/d*.55}
+      else{
+        let amount=Math.min(2,w.target.amount);w.target.amount-=amount;
+        let bonus=1;
+        if(w.target.type==='food' && buildings.some(b=>b.type==='farm' && Math.hypot(b.x-w.x,b.y-w.y)<180)) bonus=2;
+        if(w.target.type==='stone' && buildings.some(b=>b.type==='mine' && Math.hypot(b.x-w.x,b.y-w.y)<180)) bonus=2;
+        if(w.target.type==='wood' && buildings.some(b=>b.type==='lumber' && Math.hypot(b.x-w.x,b.y-w.y)<180)) bonus=2;
+        state[w.target.type]+=amount*bonus;
+      }
+    }
+  });
+}
+if(state.tick%100===0){state.gold+=2;state.food=Math.max(0,state.food-1)}
+ state.pop=units.length;
+ document.getElementById('gold').textContent=Math.floor(state.gold);
+ document.getElementById('wood').textContent=Math.floor(state.wood);
+ document.getElementById('stone').textContent=Math.floor(state.stone);
+ document.getElementById('food').textContent=Math.floor(state.food);
+ document.getElementById('pop').textContent=state.pop+' / '+state.maxPop;
+ document.getElementById('tick').textContent=state.tick;
+ document.getElementById('selected').textContent=selected.size;
+ document.getElementById('workers').textContent=workers.length;
+ document.getElementById('research').textContent=state.research+(researchDone?' ✓':'');
+ document.getElementById('groups').textContent=Object.values(armyGroups).filter(g=>g.length).length;
+ let controlled=units.filter(u=>Math.hypot(u.x-400,u.y-430)<territoryRadius).length;
+ document.getElementById('territory').textContent=controlled>0?'Home + '+Math.min(99,controlled*4)+'% control':'Contested';
+ draw();if(state.tick%100===0) saveGame();
+ requestAnimationFrame(update);
+}
+function selectAt(x,y,add=false){
+ let best=null,bd=25/world.zoom;
+ units.forEach(u=>{if(u.team!=='player')return;let d=Math.hypot(u.x-x,u.y-y);if(d<bd){best=u;bd=d}});
+ if(!add)selected.clear();if(best)selected.add(best.id);
+ document.getElementById('orderText').textContent=best?'Infantry selected. Right-click to move.':'Select an infantry unit.';
+}
+c.addEventListener('pointerdown',e=>{mouse.x=e.clientX;mouse.y=e.clientY;drag={x:mouse.x,y:mouse.y};c.setPointerCapture(e.pointerId)});
+c.addEventListener('pointermove',e=>{mouse.x=e.clientX;mouse.y=e.clientY});
+c.addEventListener('pointerup',e=>{
+ if(buildModeActive){
+   let x=wx(e.clientX),y=wy(e.clientY);
+   placeBuilding(buildModeActive,x,y);
+   buildModeActive=null;
+   c.style.cursor='default';
+   return;
+ }
+ let dx=mouse.x-drag.x,dy=mouse.y-drag.y;
+ if(Math.hypot(dx,dy)<8)selectAt(wx(mouse.x),wy(mouse.y),e.shiftKey);
+ else {let x1=Math.min(wx(drag.x),wx(mouse.x)),x2=Math.max(wx(drag.x),wx(mouse.x)),y1=Math.min(wy(drag.y),wy(mouse.y)),y2=Math.max(wy(drag.y),wy(mouse.y));if(!e.shiftKey)selected.clear();units.forEach(u=>{if(u.x>=x1&&u.x<=x2&&u.y>=y1&&u.y<=y2)selected.add(u.id)})}
+ drag=null;
+});
+c.addEventListener('contextmenu',e=>{
+ e.preventDefault();if(!selected.size)return;
+ let tx=wx(e.clientX),ty=wy(e.clientY),target=null,bd=35/world.zoom;
+ enemies.forEach(en=>{let d=Math.hypot(en.x-tx,en.y-ty);if(d<bd){target=en;bd=d}});
+ let arr=[...selected];
+ arr.forEach((id,i)=>{
+   let u=units.find(v=>v.id===id);if(!u)return;
+   if(target){u.attack=true;u.tx=target.x;u.ty=target.y;u.attackTarget=target.id}
+   else {u.attack=false;let a=(i/arr.length)*Math.PI*2;u.tx=tx+Math.cos(a)*22;u.ty=ty+Math.sin(a)*22}
+ });
+ flash(target?'Attack order issued':'Move order issued');
+ document.getElementById('orderText').textContent=target?'Attack order issued.':'Move order issued.';
+});
+function attackMode(){
+ if(!selected.size)return flash('Select units first');
+ let tx=world.camX,ty=world.camY;
+ selected.forEach(id=>{let u=units.find(v=>v.id===id);if(u)u.attack=true});
+ flash('Units are now aggressive');
+}
+function stopUnits(){
+ selected.forEach(id=>{let u=units.find(v=>v.id===id);if(u){u.attack=false;u.tx=u.x;u.ty=u.y}});
+ flash('Units stopped');
+}
+
+
+const buildCosts={
+ house:{wood:100},
+ farm:{wood:80},
+ mine:{wood:100,stone:50},
+ lumber:{wood:80},
+ barracks:{wood:150},
+ wall:{stone:30},
+ road:{stone:10}
+};
+function buildMode(type){
+ buildModeActive=type;c.style.cursor='crosshair';
+ flash('Tap the map to place '+type);
+}
+function placeBuilding(type,x,y){
+ let cost=buildCosts[type]||{};
+ if(state.wood<(cost.wood||0)||state.stone<(cost.stone||0)){
+   flash('Not enough resources');return;
+ }
+ state.wood-=cost.wood||0;state.stone-=cost.stone||0;
+ buildings.push({x,y,type});
+ if(type==='house')state.maxPop+=10;
+ if(type==='farm')state.food+=25;
+ if(type==='mine')state.stone+=25;
+ if(type==='lumber')state.wood+=25;
+ flash(type.charAt(0).toUpperCase()+type.slice(1)+' built');
+}
+function trainCivilian(){
+ if(state.food<40)return flash('Not enough food');
+ if(state.pop>=state.maxPop)return flash('Population limit reached');
+ state.food-=40;state.pop++;
+ let id=workers.length;workers.push({id,x:450+id*14,y:460,job:null,target:null});
+ flash('Civilian trained');
+}
+function research(){
+ if(researchDone)return flash('Research already completed');
+ if(state.gold<150)return flash('Not enough gold');
+ state.gold-=150;state.research++;researchDone=true;
+ units.forEach(u=>{u.damage+=2;u.max+=10;u.hp=u.max});
+ flash('Military research completed');
+}
+window.addEventListener('keydown',e=>{
+ if(['1','2','3'].includes(e.key)){
+  let n=+e.key;
+  if(e.shiftKey){armyGroups[n]=[...selected];flash('Army group '+n+' assigned');}
+  else {selected.clear();armyGroups[n].forEach(id=>{if(units.some(u=>u.id===id))selected.add(id)});flash('Army group '+n+' selected');}
+ }
+});
+function diplomacy(){
+ let n=nations[1];
+ if(n.state==='Neutral'){n.state='Friendly';flash(n.name+' is now Friendly')}
+ else if(n.state==='Friendly'){n.state='Hostile';flash(n.name+' is now Hostile')}
+ else {n.state='Neutral';flash(n.name+' is now Neutral')}
+}
+function flash(t){let m=document.getElementById('message');m.textContent=t;m.style.opacity=1;setTimeout(()=>m.style.opacity=0,900)}
+function buildHouse(){buildMode('house')}
+function train(){
+ trainUnit('infantry');
+}
+function trainUnit(type){
+ const cost={
+  infantry:{food:60},
+  archer:{food:50,wood:30},
+  cavalry:{food:80,gold:60},
+  siege:{wood:100,stone:100}
+ }[type];
+ const popCost=type==='siege'?4:1;
+ if(state.pop+popCost>state.maxPop)return flash('Population limit reached');
+ if(state.food<(cost.food||0)||state.wood<(cost.wood||0)||state.gold<(cost.gold||0)||state.stone<(cost.stone||0))return flash('Not enough resources');
+ state.food-=cost.food||0;state.wood-=cost.wood||0;state.gold-=cost.gold||0;state.stone-=cost.stone||0;
+ let id=units.length?Math.max(...units.map(u=>u.id))+1:0;
+ units.push(makeUnit(id,type,450,540));state.pop+=popCost;
+ flash(type.charAt(0).toUpperCase()+type.slice(1)+' recruited');
+}
+function upgradeArmy(){
+ if(state.gold<100)return flash('Not enough gold');
+ if(!selected.size)return flash('Select an army');
+ state.gold-=100;
+ selected.forEach(id=>{let u=units.find(v=>v.id===id);if(u){u.level++;u.damage+=5;u.max+=20;u.hp=u.max}});
+ flash('Selected units upgraded');
+}
+>
